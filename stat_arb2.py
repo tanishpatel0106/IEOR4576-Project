@@ -1115,8 +1115,9 @@ def backtest_pairs(
 
             # Exit logic
             if active and abs(s_score) <= exit_z:
-                q1 = positions[key]["q1"]
-                q2 = positions[key]["q2"]
+                pos = positions.get(key, {})
+                q1 = pos.get("q1", 0.0)
+                q2 = pos.get("q2", 0.0)
                 traded = abs(q1) * price_today[l1] + abs(q2) * price_today[l2]
                 equity -= traded * tc
                 trade_records.append({
@@ -1128,6 +1129,10 @@ def backtest_pairs(
                     "s_score": s_score,
                     "price1": price_today[l1],
                     "price2": price_today[l2],
+                    "qty1": q1,
+                    "qty2": q2,
+                    "side1": "LONG" if q1 > 0 else "SHORT",
+                    "side2": "LONG" if q2 > 0 else "SHORT",
                     "equity": equity
                 })
                 positions.pop(key, None)
@@ -1157,6 +1162,8 @@ def backtest_pairs(
                     "price2": price_today[l2],
                     "qty1": qty1,
                     "qty2": qty2,
+                    "side1": "LONG" if qty1 > 0 else "SHORT",
+                    "side2": "LONG" if qty2 > 0 else "SHORT",
                     "equity": equity
                 })
 
@@ -1624,7 +1631,8 @@ if st.session_state["run_backtest"]:
         if not trades_df.empty:
             st.subheader("Pair Trade Log")
             st.dataframe(trades_df[
-                ["pair", "action", "s_score", "price1", "price2", "equity"]
+                ["pair", "action", "leg1", "side1", "qty1", "price1",
+                 "leg2", "side2", "qty2", "price2", "s_score", "equity"]
             ])
 
             pairs_list = sorted(trades_df["pair"].unique().tolist())
@@ -1659,6 +1667,95 @@ if st.session_state["run_backtest"]:
                 )
             fig_spread.update_layout(title=f"Spread with signals – {chosen_pair}", hovermode="x unified")
             st.plotly_chart(fig_spread, use_container_width=True)
+
+            # --- Price chart with LONG/SHORT markers for each leg ---
+            def get_ohlc(ticker: str) -> pd.DataFrame:
+                df = yf.download(
+                    ticker,
+                    start=start_date,
+                    end=end_date + timedelta(days=1),
+                    progress=False
+                )
+                if isinstance(df.columns, pd.MultiIndex):
+                    df = df.droplevel(1, axis=1)
+                return df[["Open", "High", "Low", "Close"]].dropna()
+
+            ohlc1 = get_ohlc(l1)
+            ohlc2 = get_ohlc(l2)
+            # align to backtest dates
+            backtest_idx = prices.index
+            ohlc1 = ohlc1.loc[ohlc1.index.intersection(backtest_idx)]
+            ohlc2 = ohlc2.loc[ohlc2.index.intersection(backtest_idx)]
+
+            fig_price = go.Figure()
+            if not ohlc1.empty:
+                fig_price.add_trace(
+                    go.Candlestick(
+                        x=ohlc1.index,
+                        open=ohlc1["Open"],
+                        high=ohlc1["High"],
+                        low=ohlc1["Low"],
+                        close=ohlc1["Close"],
+                        name=f"{l1} OHLC"
+                    )
+                )
+            if not ohlc2.empty:
+                fig_price.add_trace(
+                    go.Candlestick(
+                        x=ohlc2.index,
+                        open=ohlc2["Open"],
+                        high=ohlc2["High"],
+                        low=ohlc2["Low"],
+                        close=ohlc2["Close"],
+                        name=f"{l2} OHLC",
+                        yaxis="y2",
+                        increasing_line_color="goldenrod",
+                        decreasing_line_color="peru"
+                    )
+                )
+
+            def add_leg_markers(df, leg_col, price_col, side_col, name_prefix):
+                if df.empty:
+                    return
+                for action, symbol in [("ENTER", "triangle-up"), ("EXIT", "circle")]:
+                    sub = df[df["action"] == action]
+                    if sub.empty:
+                        continue
+                    colors = sub[side_col].map({"LONG": "green", "SHORT": "red"}).fillna("gray")
+                    fig_price.add_trace(
+                        go.Scatter(
+                            x=sub.index,
+                            y=sub[price_col],
+                            mode="markers",
+                            name=f"{name_prefix} {action}",
+                            marker=dict(
+                                symbol=symbol,
+                                color=colors,
+                                size=9,
+                                line=dict(width=1, color="black"),
+                            ),
+                            yaxis="y" if leg_col == "leg1" else "y2"
+                        )
+                    )
+
+            add_leg_markers(pair_trades, "leg1", "price1", "side1", l1)
+            add_leg_markers(pair_trades, "leg2", "price2", "side2", l2)
+
+            fig_price.update_layout(
+                title=f"Price & Signals – {l1} vs {l2}",
+                xaxis_title="Date",
+                yaxis_title=l1,
+                yaxis2=dict(
+                    title=l2,
+                    overlaying="y",
+                    side="right",
+                    showgrid=False
+                ),
+                xaxis_rangeslider_visible=False,
+                hovermode="x unified",
+                legend_title="Signals"
+            )
+            st.plotly_chart(fig_price, use_container_width=True)
         else:
             st.info("No trades triggered in cointegration backtest.")
 
