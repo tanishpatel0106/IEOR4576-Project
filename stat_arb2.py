@@ -78,44 +78,45 @@ factor_model_type = st.sidebar.selectbox(
     ]
 )
 
-# Cointegration knobs (used only when that mode is selected)
-pair_corr_floor = st.sidebar.number_input(
-    "Cointegration: min correlation",
-    min_value=0.0,
-    max_value=0.99,
-    value=0.6,
-    step=0.05,
-    help="Screen out pairs that are too weakly correlated."
-)
-pair_adf_alpha = st.sidebar.number_input(
-    "Cointegration: ADF p-value cutoff",
-    min_value=0.001,
-    max_value=0.2,
-    value=0.05,
-    step=0.005,
-    help="Keep pairs whose spread ADF p-value is below this."
-)
-pair_notional_frac = st.sidebar.slider(
-    "Cointegration: notional per pair (fraction of equity)",
-    min_value=0.02,
-    max_value=0.5,
-    value=0.1,
-    step=0.02
-)
-pair_min_hl = st.sidebar.number_input(
-    "Cointegration: min half-life (days)",
-    min_value=1,
-    max_value=200,
-    value=2,
-    step=1
-)
-pair_max_hl = st.sidebar.number_input(
-    "Cointegration: max half-life (days)",
-    min_value=5,
-    max_value=400,
-    value=90,
-    step=5
-)
+pair_corr_floor = pair_adf_alpha = pair_notional_frac = pair_min_hl = pair_max_hl = None
+if factor_model_type == "Cointegration (pairs)":
+    pair_corr_floor = st.sidebar.number_input(
+        "Cointegration: min correlation",
+        min_value=0.0,
+        max_value=0.99,
+        value=0.6,
+        step=0.05,
+        help="Screen out pairs that are too weakly correlated."
+    )
+    pair_adf_alpha = st.sidebar.number_input(
+        "Cointegration: ADF p-value cutoff",
+        min_value=0.001,
+        max_value=0.2,
+        value=0.05,
+        step=0.005,
+        help="Keep pairs whose spread ADF p-value is below this."
+    )
+    pair_notional_frac = st.sidebar.slider(
+        "Cointegration: notional per pair (fraction of equity)",
+        min_value=0.02,
+        max_value=0.5,
+        value=0.1,
+        step=0.02
+    )
+    pair_min_hl = st.sidebar.number_input(
+        "Cointegration: min half-life (days)",
+        min_value=1,
+        max_value=200,
+        value=2,
+        step=1
+    )
+    pair_max_hl = st.sidebar.number_input(
+        "Cointegration: max half-life (days)",
+        min_value=5,
+        max_value=400,
+        value=90,
+        step=5
+    )
 
 
 pca_explained_var = st.sidebar.slider(
@@ -382,39 +383,42 @@ def robust_pca_factors(returns: pd.DataFrame, n_components: int = None):
 # ============================================================
 #             PCA Residual Builder (REPLACEMENT)
 # ============================================================
-def build_residuals_pca(prices: pd.DataFrame,
-                        tickers: List[str],
-                        pca_lookback: int) -> pd.DataFrame:
+def build_residuals_pca(
+    prices: pd.DataFrame,
+    tickers: List[str],
+    pca_lookback: int
+) -> Tuple[pd.DataFrame, Optional[np.ndarray], Optional[np.ndarray]]:
     """
     CORRECTED PCA RESIDUAL BUILDER:
     - uses only tickers that exist in prices
     - uses log returns (stable)
     - enforces minimum asset count
     - avoids empty PCA residuals
+    Returns (residual_df, eigvals, eigvecs)
     """
     # ensure tickers exist in price DataFrame
     tickers = [t for t in tickers if t in prices.columns]
     if len(tickers) < 3:
-        return pd.DataFrame()  # PCA needs > 2 assets
+        return pd.DataFrame(), None, None  # PCA needs > 2 assets
 
     # Slice window
     price_window = prices[tickers].iloc[-pca_lookback:].copy()
     price_window = price_window.dropna(axis=1, how="any")
 
     if price_window.shape[1] < 3:
-        return pd.DataFrame()
+        return pd.DataFrame(), None, None
 
     # log returns (numerically stable)
     ret_window = np.log(price_window / price_window.shift(1)).dropna()
     if ret_window.empty or ret_window.shape[1] < 3:
-        return pd.DataFrame()
+        return pd.DataFrame(), None, None
 
     # robust PCA
     resid_df, eigvals, eigvecs = robust_pca_factors(ret_window)
     if resid_df is None or resid_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), None, None
 
-    return resid_df
+    return resid_df, eigvals, eigvecs
 # def compute_pca_factors(
 #     returns: pd.DataFrame,
 #     window: int,
@@ -934,7 +938,7 @@ def build_residuals(
     sector_mapping: Dict[str, str]
 ) -> Tuple[Dict[str, pd.Series], Dict]:
     if factor_model_type == "PCA":
-        residuals_df = build_residuals_pca(
+        residuals_df, eigvals, eigvecs = build_residuals_pca(
             prices=returns,
             tickers=user_tickers,
             pca_lookback=window_corr_days
@@ -943,7 +947,7 @@ def build_residuals(
             col: residuals_df[col].dropna()
             for col in residuals_df.columns
         }
-        return residuals, {"method": "robust_pca"}
+        return residuals, {"method": "robust_pca", "eigvals": eigvals, "eigvecs": eigvecs}
 
     elif factor_model_type == "Single Market Factor (SPY)":
         return build_residuals_single_factor_rolling(
@@ -1598,6 +1602,25 @@ if st.session_state["run_backtest"]:
             st.metric("Annualized Vol", f"{100 * ann_vol:,.1f}%")
             st.metric("Sharpe (no RF)", f"{sharpe:,.2f}")
 
+        # Additional cointegration diagnostics
+        st.subheader("Cointegration Stats")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Pairs scanned", f"{len(pairs_df)}")
+        c2.metric("Pairs kept", f"{len(filtered_pairs)}")
+        c3.metric("Avg corr (kept)", f"{filtered_pairs['corr'].mean():.2f}")
+        c4.metric("Med half-life (days)", f"{filtered_pairs['half_life'].median():.1f}")
+        entries = int((trades_df["action"] == "ENTER").sum()) if not trades_df.empty else 0
+        exits = int((trades_df["action"] == "EXIT").sum()) if not trades_df.empty else 0
+        c5.metric("Entries", f"{entries}")
+        c6.metric("Exits", f"{exits}")
+
+        st.markdown("**Top signals (sorted by latest s-score)**")
+        st.dataframe(
+            filtered_pairs.sort_values("last_s", ascending=False)[
+                ["pair", "corr", "adf_p", "half_life", "last_s", "beta"]
+            ].head(10)
+        )
+
         if not trades_df.empty:
             st.subheader("Pair Trade Log")
             st.dataframe(trades_df[
@@ -1641,7 +1664,10 @@ if st.session_state["run_backtest"]:
 
     else:
         # Build sector mapping automatically if needed
-        if factor_model_type == "Sector ETF factors (auto mapping)":
+        if factor_model_type in [
+            "Sector ETF factors (auto mapping)",
+            "SPY + Sector + PCA"
+        ]:
             sector_mapping = auto_sector_etf_mapping(user_tickers)
             if not sector_mapping:
                 st.error("Automatic sector ETF mapping failed for all tickers.")
@@ -1695,6 +1721,14 @@ if st.session_state["run_backtest"]:
         elif not residuals:
             st.error("Residuals could not be built – check factor model & mappings.")
         else:
+            # Persist for diagnostics pages
+            st.session_state["prices"] = prices
+            st.session_state["volume"] = volume
+            st.session_state["returns"] = returns
+            st.session_state["residuals"] = residuals
+            st.session_state["residuals_meta"] = meta
+            st.session_state["factor_model_type"] = factor_model_type
+
             # Show mapping if using sector ETF model
             if factor_model_type == "SPY + Sector + PCA":
                 st.subheader("Sector mapping used in full model")
@@ -1723,6 +1757,11 @@ if st.session_state["run_backtest"]:
                     st.warning("Backtest produced no results – possibly insufficient history.")
                 else:
                     st.subheader("Equity Curve & Performance")
+
+                    # Save for analytics pages
+                    st.session_state["equity_df"] = equity_df
+                    st.session_state["detailed_df"] = detailed_df
+                    st.session_state["trades_df"] = trades_df
 
                     col1, col2 = st.columns([2, 1])
                     with col1:
