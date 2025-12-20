@@ -2,6 +2,11 @@
 
 Streamlit app that replicates a mean-reversion statistical arbitrage workflow inspired by Avellaneda & Lee (2010). The app pulls US equity data from Yahoo Finance, fits factor models to extract idiosyncratic residuals, estimates Ornstein–Uhlenbeck parameters, and produces contrarian long/short signals you can backtest or view live.
 
+## Collaborators
+- Tanish Patel <tp2899@columbia.edu>
+- Aditya Pendyala <ap4839@columbia.edu>
+- Hardik Saurabh Gupta <hg2770@columbia.edu>
+
 ### Features
 - Multiple factor models: robust PCA, single-factor SPY, sector ETF betas (auto-mapped from ticker sectors), full SPY+sector+PCA stack, plus a cointegration/pairs mode with ADF and half-life filters.
 - Residual modeling: OU/AR(1) fit with optional volume-based “trading time” scaling, configurable estimation windows, entry/exit s-score bands, and transaction cost + leverage inputs.
